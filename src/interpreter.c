@@ -15,10 +15,11 @@ extern "C" {
 #endif
 
 typedef struct {
-    jl_code_info_t *src;
-    jl_module_t *module;
-    jl_value_t **locals;
-    jl_svec_t *sparam_vals;
+    jl_code_info_t *src; // contains the names and number of slots
+    jl_module_t *module; // context for globals
+    jl_value_t **locals; // slots for holding local slots and ssavalues
+    jl_svec_t *sparam_vals; // method static parameters, if eval-ing a method body
+    int preevaluation; // use special rules for pre-evaluating expressions
 } interpreter_state;
 
 static jl_value_t *eval(jl_value_t *e, interpreter_state *s);
@@ -27,6 +28,9 @@ static jl_value_t *eval_body(jl_array_t *stmts, interpreter_state *s, int start,
 jl_value_t *jl_eval_module_expr(jl_module_t *m, jl_expr_t *ex);
 int jl_is_toplevel_only_expr(jl_value_t *e);
 
+// deprecated: do not use this method in new code
+// it uses special scoping / evaluation / error rules
+// which should instead be handled in lowering
 jl_value_t *jl_interpret_toplevel_expr_in(jl_module_t *m, jl_value_t *e,
                                           jl_code_info_t *src,
                                           jl_svec_t *sparam_vals)
@@ -35,11 +39,11 @@ jl_value_t *jl_interpret_toplevel_expr_in(jl_module_t *m, jl_value_t *e,
     jl_value_t *v=NULL;
     jl_module_t *last_m = ptls->current_module;
     jl_module_t *task_last_m = ptls->current_task->current_module;
-    interpreter_state s;
+    interpreter_state s = {};
     s.src = src;
     s.module = m;
-    s.locals = NULL;
     s.sparam_vals = sparam_vals;
+    s.preevaluation = (sparam_vals != NULL);
 
     JL_TRY {
         ptls->current_task->current_module = ptls->current_module = m;
@@ -237,6 +241,18 @@ static jl_value_t *eval(jl_value_t *e, interpreter_state *s)
         else if (jl_is_symbol(sym)) {
             defined = jl_boundp(modu, (jl_sym_t*)sym);
         }
+        else if (jl_is_expr(sym) && ((jl_expr_t*)sym)->head == static_parameter_sym) {
+            ssize_t n = jl_unbox_long(args[0]);
+            assert(n > 0);
+            if (s->sparam_vals && n <= jl_svec_len(s->sparam_vals)) {
+                jl_value_t *sp = jl_svecref(s->sparam_vals, n - 1);
+                defined = !jl_is_typevar(sp);
+            }
+            else {
+                // static parameter val unknown needs to be an error for ccall
+                jl_error("could not determine static parameter value");
+            }
+        }
         else {
             assert(0 && "malformed isdefined expression");
         }
@@ -264,7 +280,10 @@ static jl_value_t *eval(jl_value_t *e, interpreter_state *s)
         ssize_t n = jl_unbox_long(args[0]);
         assert(n > 0);
         if (s->sparam_vals && n <= jl_svec_len(s->sparam_vals)) {
-            return jl_svecref(s->sparam_vals, n - 1);
+            jl_value_t *sp = jl_svecref(s->sparam_vals, n - 1);
+            if (jl_is_typevar(sp) && !s->preevaluation)
+                jl_undefined_var_error(((jl_tvar_t*)sp)->name);
+            return sp;
         }
         // static parameter val unknown needs to be an error for ccall
         jl_error("could not determine static parameter value");
@@ -508,11 +527,8 @@ static jl_value_t *eval(jl_value_t *e, interpreter_state *s)
 jl_value_t *jl_toplevel_eval_body(jl_module_t *m, jl_array_t *stmts)
 {
     size_t last_age = jl_get_ptls_states()->world_age;
-    interpreter_state s;
-    s.src = NULL;
+    interpreter_state s = {};
     s.module = m;
-    s.locals = NULL;
-    s.sparam_vals = NULL;
     jl_value_t *ret = eval_body(stmts, &s, 0, 1);
     jl_get_ptls_states()->world_age = last_age;
     return ret;
@@ -665,7 +681,7 @@ jl_value_t *jl_interpret_call(jl_method_instance_t *lam, jl_value_t **args, uint
     JL_GC_PUSHARGS(locals, jl_source_nslots(src) + jl_source_nssavalues(src) + 2);
     locals[0] = (jl_value_t*)src;
     locals[1] = (jl_value_t*)stmts;
-    interpreter_state s;
+    interpreter_state s = {};
     s.src = src;
     s.module = lam->def.method->module;
     s.locals = locals + 2;
@@ -688,7 +704,7 @@ jl_value_t *jl_interpret_toplevel_thunk(jl_module_t *m, jl_code_info_t *src)
     assert(jl_typeis(stmts, jl_array_any_type));
     jl_value_t **locals;
     JL_GC_PUSHARGS(locals, jl_source_nslots(src) + jl_source_nssavalues(src));
-    interpreter_state s;
+    interpreter_state s = {};
     s.src = src;
     s.locals = locals;
     s.module = m;

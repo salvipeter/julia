@@ -1430,8 +1430,7 @@ function invoke_tfunc(@nospecialize(f), @nospecialize(types), @nospecialize(argt
         return Any
     end
     meth = entry.func
-    (ti, env) = ccall(:jl_match_method, Ref{SimpleVector}, (Any, Any),
-                      argtype, meth.sig)
+    (ti, env) = ccall(:jl_env_from_type_intersection, Any, (Any, Any), argtype, meth.sig)::SimpleVector
     rt, edge = typeinf_edge(meth::Method, ti, env, sv)
     edge !== nothing && add_backedge!(edge::MethodInstance, sv)
     return rt
@@ -1808,7 +1807,7 @@ function abstract_call_method(method::Method, @nospecialize(f), @nospecialize(si
 
     # if sig changed, may need to recompute the sparams environment
     if isa(method.sig, UnionAll) && isempty(sparams)
-        recomputed = ccall(:jl_env_from_type_intersection, Ref{SimpleVector}, (Any, Any), sig, method.sig)
+        recomputed = ccall(:jl_match_method, Any, (Any, Any), sig, method.sig)::SimpleVector
         sig = recomputed[1]
         if !isa(unwrap_unionall(sig), DataType) # probably Union{}
             return Any
@@ -2389,11 +2388,11 @@ function abstract_eval(@nospecialize(e), vtypes::VarTable, sv::InferenceState)
     elseif e.head === :static_parameter
         n = e.args[1]
         t = Any
-        if n <= length(sv.sp)
+        if 1 <= n <= length(sv.sp)
             val = sv.sp[n]
             if isa(val, TypeVar) && Any <: val.ub
                 # static param bound to typevar
-                # if the tvar does not refer to anything more specific than Any,
+                # if the tvar is not known to refer to anything more specific than Any,
                 # the static param might actually be an integer, symbol, etc.
             elseif has_free_typevars(val)
                 vs = ccall(:jl_find_free_typevars, Any, (Any,), val)
@@ -2430,6 +2429,14 @@ function abstract_eval(@nospecialize(e), vtypes::VarTable, sv::InferenceState)
         elseif isa(sym, GlobalRef)
             if isdefined(sym.mod, sym.name)
                 t = Const(true)
+            end
+        elseif isa(sym, Expr) && sym.head === :static_parameter
+            n = sym.args[1]
+            if 1 <= n <= length(sv.sp)
+                val = sv.sp[n]
+                if !isa(val, TypeVar)
+                    t = Const(true)
+                end
             end
         end
     else
@@ -3818,8 +3825,12 @@ function effect_free(@nospecialize(e), src::CodeInfo, mod::Module, allow_volatil
     elseif isa(e, Expr)
         e = e::Expr
         head = e.head
-        if head === :static_parameter || is_meta_expr_head(head)
+        if is_meta_expr_head(head)
             return true
+        end
+        if head === :static_parameter
+            # if we aren't certain about the type, it might be an UndefVarError at runtime
+            return isa(e.typ, DataType) && isleaftype(e.typ)
         end
         if e.typ === Bottom
             return false
@@ -4229,8 +4240,8 @@ function inlineable(@nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector
     else
         invoke_data = invoke_data::InvokeData
         method = invoke_data.entry.func
-        (metharg, methsp) = ccall(:jl_match_method, Ref{SimpleVector}, (Any, Any),
-                                  atype_unlimited, method.sig)
+        (metharg, methsp) = ccall(:jl_match_method, Any, (Any, Any),
+                                  atype_unlimited, method.sig)::SimpleVector
         methsp = methsp::SimpleVector
     end
 
@@ -4964,20 +4975,21 @@ function inlining_pass(e::Expr, sv::InferenceState, stmts, ins)
                 aarg = e.args[i]
                 argt = exprtype(aarg, sv.src, sv.mod)
                 t = widenconst(argt)
-                if isa(aarg,Expr) && (is_known_call(aarg, tuple, sv.src, sv.mod) || is_known_call(aarg, svec, sv.src, sv.mod))
-                    # apply(f,tuple(x,y,...)) => f(x,y,...)
-                    newargs[i-2] = aarg.args[2:end]
-                elseif isa(argt,Const) && (isa(argt.val, Tuple) || isa(argt.val, SimpleVector)) &&
+                if isa(aarg, Expr) && (is_known_call(aarg, tuple, sv.src, sv.mod) || is_known_call(aarg, svec, sv.src, sv.mod))
+                    # apply(f, tuple(x, y, ...)) => f(x, y, ...)
+                    newargs[i - 2] = aarg.args[2:end]
+                elseif isa(argt, Const) && (isa(argt.val, Tuple) || isa(argt.val, SimpleVector)) &&
                         effect_free(aarg, sv.src, sv.mod, true)
-                    newargs[i-2] = Any[ QuoteNode(x) for x in argt.val ]
+                    val = argt.val
+                    newargs[i - 2] = Any[ QuoteNode(val[i]) for i in 1:(length(val)::Int) ] # avoid making a tuple Generator here!
                 elseif isa(aarg, Tuple) || (isa(aarg, QuoteNode) && (isa(aarg.value, Tuple) || isa(aarg.value, SimpleVector)))
                     if isa(aarg, QuoteNode)
                         aarg = aarg.value
                     end
-                    newargs[i-2] = Any[ QuoteNode(x) for x in aarg ]
+                    newargs[i - 2] = Any[ QuoteNode(aarg[i]) for i in 1:(length(aarg)::Int) ] # avoid making a tuple Generator here!
                 elseif isa(t, DataType) && t.name === Tuple.name && !isvatuple(t) &&
                          length(t.parameters) <= sv.params.MAX_TUPLE_SPLAT
-                    for k = (effect_free_upto+1):(i-3)
+                    for k = (effect_free_upto + 1):(i - 3)
                         as = newargs[k]
                         for kk = 1:length(as)
                             ak = as[kk]
@@ -4988,7 +5000,7 @@ function inlining_pass(e::Expr, sv::InferenceState, stmts, ins)
                             end
                         end
                     end
-                    effect_free_upto = i-3
+                    effect_free_upto = i - 3
                     if effect_free(aarg, sv.src, sv.mod, true)
                         # apply(f,t::(x,y)) => f(t[1],t[2])
                         tmpv = aarg
@@ -5002,13 +5014,13 @@ function inlining_pass(e::Expr, sv::InferenceState, stmts, ins)
                     else
                         tp = t.parameters
                     end
-                    newargs[i-2] = Any[ mk_getfield(tmpv,j,tp[j]) for j=1:length(tp) ]
+                    newargs[i - 2] = Any[ mk_getfield(tmpv, j, tp[j]) for j in 1:(length(tp)::Int) ]
                 else
                     # not all args expandable
                     return e
                 end
             end
-            splice!(stmts, ins:ins-1, newstmts)
+            splice!(stmts, ins:(ins - 1), newstmts)
             ins += length(newstmts)
             e.args = [Any[e.args[2]]; newargs...]
 
@@ -5136,11 +5148,17 @@ normvar(@nospecialize(s)) = s
 
 # given a single-assigned var and its initializer `init`, return what we can
 # replace `var` with, or `var` itself if we shouldn't replace it
-function get_replacement(table, var::Union{SlotNumber, SSAValue}, @nospecialize(init), nargs, slottypes, ssavaluetypes)
+function get_replacement(table::ObjectIdDict, var::Union{SlotNumber, SSAValue}, @nospecialize(init),
+                         nargs::Int, slottypes::Vector{Any}, ssavaluetypes::Vector{Any})
     #if isa(init, QuoteNode)  # this can cause slight code size increases
     #    return init
-    if (isa(init, Expr) && init.head === :static_parameter) || isa(init, corenumtype) ||
-        init === () || init === nothing
+    if isa(init, Expr) && init.head === :static_parameter
+        # if we aren't certain about the type, it might be an UndefVarError at runtime (!effect_free)
+        # so we need to preserve the original point of assignment
+        if isa(init.typ, DataType) && isleaftype(init.typ)
+            return init
+        end
+    elseif isa(init, corenumtype) || init === () || init === nothing
         return init
     elseif isa(init, Slot) && is_argument(nargs, init::Slot)
         # the transformation is not ideal if the assignment
@@ -5187,7 +5205,7 @@ function remove_redundant_temp_vars!(src::CodeInfo, nargs::Int, sa::ObjectIdDict
     repls = ObjectIdDict()
     for (v, init) in sa
         repl = get_replacement(sa, v, init, nargs, slottypes, ssavaluetypes)
-        compare = isa(repl,TypedSlot) ? normslot(repl) : repl
+        compare = isa(repl, TypedSlot) ? normslot(repl) : repl
         if compare !== v
             repls[v] = repl
         end

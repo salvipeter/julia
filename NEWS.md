@@ -32,6 +32,16 @@ Language changes
   * `{ }` expressions now use `braces` and `bracescat` as expression heads instead
     of `cell1d` and `cell2d`, and parse similarly to `vect` and `vcat` ([#8470]).
 
+  * Dispatch rules have been simplified:
+    matching methods is now determined exclusively by subtyping;
+    the rule that method type parameters must be also be captured has been removed.
+    Instead, attempting to access the uncontrained parameters will throw an `UndefVarError`.
+    Linting in package tests is recommended to confirm that the set of methods
+    which might throw `UndefVarError` when accessing the static parameters
+    (`need_to_handle_undef_sparam = Set{Any}(m.sig for m in Test.detect_unbound_args(Base, recursive=true))`)
+    is equal (`==`) to some known set (`expected = Set()`). ([#TBD])
+
+
 Breaking changes
 ----------------
 

@@ -293,11 +293,17 @@ let g() = Int <: Real ? 1 : ""
 end
 
 const NInt{N} = Tuple{Vararg{Int, N}}
+const NInt1{N} = Tuple{Int, Vararg{Int, N}}
 @test Base.eltype(NInt) === Int
-@test Base.return_types(eltype, (NInt,)) == Any[Union{Type{Int}, Type{Union{}}}] # issue 21763
+@test Base.eltype(NInt1) === Int
+@test Base.eltype(NInt{0}) === Union{}
+@test Base.eltype(NInt{1}) === Int
+@test Base.eltype(NInt1{0}) === Int
+@test Base.eltype(NInt1{1}) === Int
 fNInt(x::NInt) = (x...)
 gNInt() = fNInt(x)
 @test Base.return_types(gNInt, ()) == Any[NInt]
+@test Base.return_types(eltype, (NInt,)) == Any[Union{Type{Int}, Type{Union{}}}] # issue 21763
 
 # issue #17572
 function f17572(::Type{Val{A}}) where A
@@ -368,7 +374,7 @@ end
 f18222(::Union{T, Int}) where {T<:AbstractFloat} = false
 f18222(x) = true
 g18222(x) = f18222(x)
-@test f18222(1) == g18222(1) == true
+@test f18222(1) == g18222(1) == false
 @test f18222(1.0) == g18222(1.0) == false
 
 # issue #18399
