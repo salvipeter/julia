@@ -221,6 +221,10 @@ Deprecated or removed
   * The function `showall` is deprecated. Showing entire values is the default, unless an
     `IOContext` specifying `:limit=>true` is in use ([#22847]).
 
+  * Automatically broadcasted `+` and `-` for `array + scalar`, `scalar - array`, and so-on have
+    been deprecated due to inconsistency with linear algebra. Use `.+` and `.-` for these operations
+    instead.
+
 
 Julia v0.6.0 Release Notes
 ==========================

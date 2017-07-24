@@ -1591,6 +1591,11 @@ end
 @deprecate readstring(filename::AbstractString) read(filename, String)
 @deprecate readstring(cmd::AbstractCmd) read(cmd, String)
 
+@deprecate +(a::Number, b::AbstractArray) a .+ b
+@deprecate +(a::AbstractArray, b::Number) a .+ b
+@deprecate -(a::Number, b::AbstractArray) a .- b
+@deprecate -(a::AbstractArray, b::Number) a .- b
+
 # END 0.7 deprecations
 
 # BEGIN 1.0 deprecations
