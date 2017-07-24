@@ -1264,3 +1264,9 @@ end === (3, String)
 @test [begin
           @inbounds for i = 1:10 end
        end for i = 1:5] == fill(nothing, 5)
+
+# issue #18650
+let ex = parse("maximum(@elapsed sleep(1) for k = 1:10)")
+    @test isa(ex, Expr) && ex.head === :call && ex.args[2].head === :generator &&
+        ex.args[2].args[1].head === :macrocall
+end
