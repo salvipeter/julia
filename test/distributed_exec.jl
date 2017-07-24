@@ -562,7 +562,8 @@ ntasks = 10
 rr_list = [Channel(1) for x in 1:ntasks]
 
 for rr in rr_list
-    let rr=rr
+    local rr # correct the scope of rr in for loop
+    let rr = rr # and get a new binding on each iteration
         @async try
             for i in 1:10
                 a = rand(2*10^5)

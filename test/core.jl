@@ -5089,3 +5089,34 @@ m22929_2.x = m22929_1
 @test !isdefined_22929_x(m22929_1)
 @test isdefined_22929_1(m22929_2)
 @test isdefined_22929_x(m22929_2)
+
+# issue 18933
+module GlobalDef18933
+    using Base.Test
+    # test that global declaration vs assignment operates correctly in local scope
+    f() = (global sin; nothing)
+    g() = (global cos; cos = 2; nothing)
+    @test @isdefined sin
+    @test !@isdefined cos
+    f()
+    g()
+    @test @isdefined cos
+    @test sin === Base.sin
+    @test cos === 2
+    # test that function definitions declared global
+    # introduce a new, local global
+    # and do so prior to the evaluation of the expression
+    let
+        @test !@isdefined tan
+        global tan() = nothing
+        @test @isdefined tan
+        @test tan() === nothing
+    end
+    # test that global declaration side-effects ignore conditionals
+    if false
+        global sincos
+        nothing
+    end
+    @test !@isdefined sincos
+    @test isdefined(Base, :sincos)
+end

@@ -32,6 +32,13 @@ Language changes
   * `{ }` expressions now use `braces` and `bracescat` as expression heads instead
     of `cell1d` and `cell2d`, and parse similarly to `vect` and `vcat` ([#8470]).
 
+  * The `global` keyword now always introduces a new binding when appearing in toplevel (global) scope.
+    Whereas, previously, embedding it in a block (such as `begin; global sin; nothing; end`) would change its meaning.
+    Additionally, the new bindings are now created before the statement is executed.
+    For example, `f() = (global sin = rand(); nothing)` will now reliably shadow the `Base.sin` function,
+    with a new, undefined `sin` variable. ([#22984]).
+
+
 Breaking changes
 ----------------
 

@@ -319,22 +319,6 @@ static jl_value_t *eval(jl_value_t *e, interpreter_state *s)
         jl_declare_constant(b);
         return (jl_value_t*)jl_nothing;
     }
-    else if (ex->head == global_sym) {
-        // create uninitialized mutable binding for "global x" decl
-        // TODO: handle type decls
-        size_t i, l = jl_array_len(ex->args);
-        for (i = 0; i < l; i++) {
-            jl_sym_t *gsym = (jl_sym_t*)args[i];
-            jl_module_t *gmodu = modu;
-            if (jl_is_globalref(gsym)) {
-                gmodu = jl_globalref_mod(gsym);
-                gsym = jl_globalref_name(gsym);
-            }
-            assert(jl_is_symbol(gsym));
-            jl_get_binding_wr(gmodu, gsym);
-        }
-        return (jl_value_t*)jl_nothing;
-    }
     else if (ex->head == abstracttype_sym) {
         if (inside_typedef)
             jl_error("cannot eval a new abstract type definition while defining another type");

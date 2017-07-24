@@ -2640,8 +2640,9 @@
 (define (free-vars e)
   (table.keys (free-vars- e (table))))
 
-(define (analyze-vars-lambda e env captvars sp new-sp)
+(define (analyze-vars-lambda e env captvars sp new-sp glob-assign)
   (let* ((args (lam:args e))
+         (glob-assign (if (null? args) (table) glob-assign))
          (locl (caddr e))
          (allv (nconc (map arg-name args) locl))
          (fv   (let* ((fv (diff (free-vars (lam:body e)) allv))
@@ -2673,7 +2674,14 @@
                                     (and (not (memq (vinfo:name v) allv))
                                          (not (memq (vinfo:name v) glo))))
                                   env))
-                  cv (delete-duplicates (append new-sp sp)))
+                  cv
+                  (delete-duplicates (append new-sp sp))
+                  glob-assign)
+    ;; if we collected any assignments to globals
+    ;; annotate them now at the toplevel
+    (if (null? args)
+        (let ((glob-decl (map (lambda (e) `(global ,e)) (table.keys glob-assign))))
+          (set-car! (cdddr e) (insert-after-meta (lam:body e) glob-decl))))
     ;; mark all the vars we capture as captured
     (for-each (lambda (v) (vinfo:set-capt! v #t))
               cv)
@@ -2688,7 +2696,7 @@
 ;; in-place to
 ;;   (var-info-lst captured-var-infos ssavalues static_params)
 ;; where var-info-lst is a list of var-info records
-(define (analyze-vars e env captvars sp)
+(define (analyze-vars e env captvars sp glob-assign)
   (if (or (atom? e) (quoted? e))
       e
       (case (car e)
@@ -2696,18 +2704,23 @@
          (let ((vi (var-info-for (cadr e) env)))
               (vinfo:set-never-undef! vi #t)))
         ((=)
-         (let ((vi (var-info-for (cadr e) env)))
-           (if vi
-               (begin (if (vinfo:asgn vi)
-                          (vinfo:set-sa! vi #f)
-                          (vinfo:set-sa! vi #t))
-                      (vinfo:set-asgn! vi #t))))
-         (analyze-vars (caddr e) env captvars sp))
+         (if (not (ssavalue? (cadr e)))
+             (let ((vi (and (symbol? (cadr e)) (var-info-for (cadr e) env))))
+               (if vi ; if local or captured
+                   (begin (if (vinfo:asgn vi)
+                              (vinfo:set-sa! vi #f)
+                              (vinfo:set-sa! vi #t))
+                          (vinfo:set-asgn! vi #t))
+                   (if (and (pair? (cadr e)) (eq? (caadr e) 'outerref))
+                       (if (not (memq (cadadr e) sp)) ; if not a sparam
+                           (put! glob-assign (cadadr e) #t)) ; it's a global
+                       (put! glob-assign (cadr e) #t))))) ; symbol or global ref
+         (analyze-vars (caddr e) env captvars sp glob-assign))
         ((call)
          (let ((vi (var-info-for (cadr e) env)))
            (if vi
                (vinfo:set-called! vi #t))
-           (for-each (lambda (x) (analyze-vars x env captvars sp))
+           (for-each (lambda (x) (analyze-vars x env captvars sp glob-assign))
                      (cdr e))))
         ((decl)
          ;; handle var::T declaration by storing the type in the var-info
@@ -2722,12 +2735,13 @@
                                          "\" declared in inner scope")))
                       (vinfo:set-type! vi (caddr e))))))
         ((lambda)
-         (analyze-vars-lambda e env captvars sp '()))
+         (analyze-vars-lambda e env captvars sp '() glob-assign))
         ((with-static-parameters)
          ;; (with-static-parameters func_expr sp_1 sp_2 ...)
          (assert (eq? (car (cadr e)) 'lambda))
          (analyze-vars-lambda (cadr e) env captvars sp
-                              (cddr e)))
+                              (cddr e)
+                              glob-assign))
         ((method)
          (if (length= e 2)
              (let ((vi (var-info-for (method-expr-name e) env)))
@@ -2737,15 +2751,28 @@
                               (vinfo:set-sa! vi #t))
                           (vinfo:set-asgn! vi #t)))
                e)
-             (begin (analyze-vars (caddr e) env captvars sp)
+             (begin (analyze-vars (caddr e) env captvars sp glob-assign)
                     (assert (eq? (car (cadddr e)) 'lambda))
                     (analyze-vars-lambda (cadddr e) env captvars sp
-                                         (method-expr-static-parameters e)))))
+                                         (method-expr-static-parameters e)
+                                         glob-assign))))
         ((module toplevel) e)
-        (else (for-each (lambda (x) (analyze-vars x env captvars sp))
+        (else (for-each (lambda (x) (analyze-vars x env captvars sp glob-assign))
                         (cdr e))))))
 
-(define (analyze-variables! e) (analyze-vars e '() '() '()) e)
+(define (analyze-variables! e)
+  (let ((glob-assign (table)))
+    (analyze-vars e '() '() '() glob-assign)
+    ;; if we collected any assignments to globals
+    ;; annotate them now at the toplevel
+    (let ((glob-decl (map (lambda (e) `(global ,e)) (table.keys glob-assign))))
+      (if (null? glob-decl)
+          e
+          (insert-after-meta
+            (if (and (pair? e) (eq? (car e) 'block))
+                e
+                `(block ,e))
+            glob-decl)))))
 
 ;; pass 4: closure conversion
 
@@ -2840,35 +2867,45 @@ f(x) = yt(x)
 ;; when doing this, the original value needs to be preserved, to
 ;; ensure the expression `a=b` always returns exactly `b`.
 (define (convert-assignment var rhs0 fname lam interp)
-  (let* ((vi (assq var (car  (lam:vinfo lam))))
-         (cv (assq var (cadr (lam:vinfo lam))))
-         (vt  (or (and vi (vinfo:type vi))
-                  (and cv (vinfo:type cv))
-                  '(core Any)))
-         (closed (and cv (vinfo:asgn cv) (vinfo:capt cv)))
-         (capt   (and vi (vinfo:asgn vi) (vinfo:capt vi))))
-    (if (and (not closed) (not capt) (equal? vt '(core Any)))
-        `(= ,var ,rhs0)
-        (let* ((rhs1 (if (or (ssavalue? rhs0) (simple-atom? rhs0)
-                             (equal? rhs0 '(the_exception)))
-                         rhs0
-                         (make-ssavalue)))
-               (rhs  (if (equal? vt '(core Any))
-                         rhs1
-                         (convert-for-type-decl rhs1 (cl-convert vt fname lam #f #f interp))))
-               (ex (cond (closed `(call (core setfield!)
-                                        ,(if interp
-                                             `($ ,var)
-                                             `(call (core getfield) ,fname (inert ,var)))
-                                        (inert contents)
-                                        ,rhs))
-                         (capt `(call (core setfield!) ,var (inert contents) ,rhs))
-                         (else `(= ,var ,rhs)))))
-          (if (eq? rhs1 rhs0)
-              `(block ,ex ,rhs0)
-              `(block (= ,rhs1 ,rhs0)
-                      ,ex
-                      ,rhs1))))))
+  (cond
+    ((symbol? var)
+     (let* ((vi (assq var (car  (lam:vinfo lam))))
+            (cv (assq var (cadr (lam:vinfo lam))))
+            (vt  (or (and vi (vinfo:type vi))
+                     (and cv (vinfo:type cv))
+                     '(core Any)))
+            (closed (and cv (vinfo:asgn cv) (vinfo:capt cv)))
+            (capt   (and vi (vinfo:asgn vi) (vinfo:capt vi))))
+       (if (and (not closed) (not capt) (equal? vt '(core Any)))
+           `(= ,var ,rhs0)
+           (let* ((rhs1 (if (or (ssavalue? rhs0) (simple-atom? rhs0)
+                                (equal? rhs0 '(the_exception)))
+                            rhs0
+                            (make-ssavalue)))
+                  (rhs  (if (equal? vt '(core Any))
+                            rhs1
+                            (convert-for-type-decl rhs1 (cl-convert vt fname lam #f #f interp))))
+                  (ex (cond (closed `(call (core setfield!)
+                                           ,(if interp
+                                                `($ ,var)
+                                                `(call (core getfield) ,fname (inert ,var)))
+                                           (inert contents)
+                                           ,rhs))
+                            (capt `(call (core setfield!) ,var (inert contents) ,rhs))
+                            (else `(= ,var ,rhs)))))
+             (if (eq? rhs1 rhs0)
+                 `(block ,ex ,rhs0)
+                 `(block (= ,rhs1 ,rhs0)
+                         ,ex
+                         ,rhs1))))))
+     ((and (pair? var) (or (eq? (car var) 'outerref)
+                           (eq? (car var) 'globalref)))
+
+      `(= ,var ,rhs0))
+     ((ssavalue? var)
+      `(= ,var ,rhs0))
+     (else
+       (error (string "invalid assignment location \"" (deparse var) "\"")))))
 
 ;; replace leading (function) argument type with `typ`
 (define (fix-function-arg-type te typ iskw namemap type-sp)
@@ -3055,9 +3092,7 @@ f(x) = yt(x)
           ((=)
            (let ((var (cadr e))
                  (rhs (cl-convert (caddr e) fname lam namemap toplevel interp)))
-             (if (ssavalue? var)
-                 `(= ,var ,rhs)
-                 (convert-assignment var rhs fname lam interp))))
+             (convert-assignment var rhs fname lam interp)))
           ((local-def) ;; make new Box for local declaration of defined variable
            (let ((vi (assq (cadr e) (car (lam:vinfo lam)))))
              (if (and vi (vinfo:asgn vi) (vinfo:capt vi))
@@ -3099,10 +3134,10 @@ f(x) = yt(x)
                   (lam2  (if short #f (cadddr e)))
                   (vis   (if short '(() () ()) (lam:vinfo lam2)))
                   (cvs   (map car (cadr vis)))
-                  (local? (lambda (s) (and (symbol? s)
+                  (local? (lambda (s) (and lam (symbol? s)
                                (or (assq s (car  (lam:vinfo lam)))
                                    (assq s (cadr (lam:vinfo lam)))))))
-                  (local (and lam (local? name)))
+                  (local (local? name))
                   (sig      (and (not short) (caddr e)))
                   (sp-inits (if (or short (not (eq? (car sig) 'block)))
                                 '()
@@ -3179,7 +3214,7 @@ f(x) = yt(x)
                                                                             (and (symbol? s)
                                                                                  (not (eq? name s))
                                                                                  (not (memq s capt-sp))
-                                                                                 (or ;(local? s) ; TODO: make this work for local variables too?
+                                                                                 (or ;(local? s) ; TODO: error for local variables
                                                                                    (memq s (lam:sp lam)))))))
                                                       (caddr methdef)
                                                       (lambda (e) (cadr e)))))
@@ -3305,7 +3340,8 @@ f(x) = yt(x)
 ;; numbered slots (or be simple immediate values), and then those will be the
 ;; only possible returned values.
 (define (compile-body e vi lam)
-  (let ((code '())
+  (let ((code '())            ;; statements (emitted in reverse order)
+        (glob-decl '())       ;; global decls will be collected in the prelude to code so they execute first
         (filename 'none)
         (first-line #t)
         (current-loc #f)
@@ -3613,6 +3649,7 @@ f(x) = yt(x)
                (if (var-info-for vname vi)
                    ;; issue #7264
                    (error (string "`global " vname "`: " vname " is local variable in the enclosing scope"))
+                   (if (null? (lam:args lam)) (set! glob-decl (cons e glob-decl))) ;; keep global decl in thunks
                    #f)))
             ((local-def) #f)
             ((local) #f)
@@ -3698,13 +3735,13 @@ f(x) = yt(x)
            (body  (cons 'body (filter (lambda (e)
                                         (not (and (pair? e) (eq? (car e) 'newvar)
                                                   (has? di (cadr e)))))
-                                      stmts))))
-      (if arg-map
-          (insert-after-meta
-           body
-           (table.foldl (lambda (k v lst) (cons `(= ,v ,k) lst))
-                        '() arg-map))
-          body))))
+                                      stmts)))
+           (prelude (if arg-map
+                        (append! glob-decl
+                                 (table.foldl (lambda (k v lst) (cons `(= ,v ,k) lst))
+                                              '() arg-map))
+                        glob-decl)))
+      (insert-after-meta body prelude))))
 
 ;; find newvar nodes that are unnecessary because (1) the variable is not
 ;; captured, and (2) the variable is assigned before any branches.
