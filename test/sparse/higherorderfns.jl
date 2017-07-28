@@ -276,13 +276,13 @@ end
     stringorfloat_notzeropres(xs...) = all(iszero, xs) ? "hello" : zero(Float64)
     for fn in (intorfloat_zeropres, intorfloat_notzeropres,
                 stringorfloat_zeropres, stringorfloat_notzeropres)
-        @test map(fn, A) == sparse(map(fn, fA))
-        @test broadcast(fn, A) == sparse(broadcast(fn, fA))
-        @test broadcast(fn, A, B) == sparse(broadcast(fn, fA, fB))
-        @test broadcast(fn, B, A) == sparse(broadcast(fn, fB, fA))
+        @test diag(map(fn, A))          == diag(map(fn, fA))
+        @test diag(broadcast(fn, A))    == diag(broadcast(fn, fA))
+        @test diag(broadcast(fn, A, B)) == diag(broadcast(fn, fA, fB))
+        @test diag(broadcast(fn, B, A)) == diag(broadcast(fn, fB, fA))
     end
     for fn in (intorfloat_zeropres, stringorfloat_zeropres)
-        @test broadcast(fn, A, B, A) == sparse(broadcast(fn, fA, fB, fA))
+        @test diag(broadcast(fn, A, B, A)) == diag(broadcast(fn, fA, fB, fA))
     end
 end
 
