@@ -1529,6 +1529,79 @@ JL_DLLEXPORT void JL_NORETURN jl_no_exc_handler(jl_value_t *e);
 
 #include "locks.h"   // requires jl_task_t definition
 
+#ifdef JULIA_ENABLE_THREADING
+#ifdef JULIA_ENABLE_PARTR
+/* ptask settings */
+#define TASK_IS_DETACHED        0x02
+    /* clean up the task on completion */
+#define TASK_IS_STICKY          0x04
+    /* task is sticky to the thread that first runs it */
+
+typedef struct _arriver_t arriver_t;
+typedef struct _reducer_t reducer_t;
+
+typedef struct _jl_ptaskq_t jl_ptaskq_t;
+typedef struct _jl_ptaskq_t jl_condition_t;
+typedef struct _jl_ptask_t jl_ptask_t;
+
+struct _jl_ptaskq_t {
+    jl_ptask_t *head;
+    jl_mutex_t lock;
+};
+
+struct _jl_ptask_t {
+    /* to link this task into queues */
+    jl_ptask_t *next;
+
+    /* TODO: context and stack */
+
+    /* state */
+    size_t started:1;
+
+    /* task entry point, arguments, result, etc. */
+    jl_method_instance_t *mfunc;
+    jl_generic_fptr_t fptr;
+    jl_value_t *args;
+    jl_value_t *result;
+    jl_module_t *current_module;
+    size_t world_age;
+
+    /* grain's range, for parfors */
+    int64_t start, end;
+
+    /* reduction function, for parfors */
+    jl_method_instance_t *mredfunc;
+    jl_generic_fptr_t rfptr;
+    jl_value_t *rargs;
+
+    /* parent (first) task of a parfor set */
+    jl_ptask_t *parent;
+
+    /* to synchronize/reduce grains of a parfor */
+    arriver_t *arr;
+    reducer_t *red;
+
+    /* parfor reduction result */
+    jl_value_t *red_result;
+
+    /* completion queue */
+    jl_ptaskq_t cq;
+
+    /* task settings */
+    int8_t  settings;
+
+    /* tid of the thread to which this task is sticky */
+    int16_t sticky_tid;
+
+    /* the index of this task in the set of grains of a parfor */
+    int16_t grain_num;
+
+    /* for the multiqueue */
+    int16_t prio;
+};
+#endif // JULIA_ENABLE_PARTR
+#endif // JULIA_ENABLE_THREADING
+
 STATIC_INLINE void jl_eh_restore_state(jl_handler_t *eh)
 {
     jl_ptls_t ptls = jl_get_ptls_states();
