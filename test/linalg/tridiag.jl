@@ -28,6 +28,19 @@ for elty in (Float32, Float64, Complex64, Complex128, Int)
         v = convert(Vector{elty}, v)
         B = convert(Matrix{elty}, B)
     end
+
+    @testset "constructor" begin
+        for (x, y) in ((d, dl), (GenericArray(d), GenericArray(dl)))
+            ST = (SymTridiagonal(x, y))::SymTridiagonal{elty, typeof(x)}
+            @test ST == Matrix(ST)
+            @test ST.dv === x
+            @test ST.ev === y
+        end
+        # enable when deprecations for 0.7 are dropped
+        # @test_throws MethodError SymTridiagonal(dv, GenericArray(ev))
+        # @test_throws MethodError SymTridiagonal(GenericArray(dv), ev)
+    end
+
     ε = eps(abs2(float(one(elty))))
     T = Tridiagonal(dl, d, du)
     Ts = SymTridiagonal(d, dl)

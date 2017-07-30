@@ -73,8 +73,9 @@ This section lists changes that do not have deprecation warnings.
     longer present. Use `first(R)` and `last(R)` to obtain
     start/stop. ([#20974])
 
-  * The `Diagonal` type definition has changed from `Diagonal{T}` to
-    `Diagonal{T,V<:AbstractVector{T}}` ([#22718]).
+  * The `Diagonal` and `SymTridiagonal` type definitions have changed from
+    `Diagonal{T}` and `SymTridiagonal{T}` to `Diagonal{T,V<:AbstractVector{T}}`,
+    and `SymTridiagonal{T,V<:AbstractVector{T}}` respectively ([#22718], [#23035]).
 
   * Spaces are no longer allowed between `@` and the name of a macro in a macro call ([#22868]).
 
@@ -142,8 +143,9 @@ Library improvements
 
   * `Char`s can now be concatenated with `String`s and/or other `Char`s using `*` ([#22532]).
 
-  * `Diagonal` is now parameterized on the type of the wrapped vector. This allows
-    for `Diagonal` matrices with arbitrary `AbstractVector`s ([#22718]).
+  * `Diagonal` and `SymTridiagonal` are now parameterized on the type
+    of the wrapped vectors, allowing `Diagonal` and `SymTridiagonal`
+    matrices with arbitrary `AbstractVector`s ([#22718], [#23035]).
 
   * Mutating versions of `randperm` and `randcycle` have been added:
     `randperm!` and `randcycle!` ([#22723]).
