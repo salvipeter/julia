@@ -85,7 +85,12 @@ issorted(itr;
 function partialsort!(v::AbstractVector, k::Union{Int,OrdinalRange}, o::Ordering)
     inds = indices(v, 1)
     sort!(v, first(inds), last(inds), PartialQuickSort(k), o)
-    v[k]
+
+    if k isa Integer
+        return v[k]
+    else
+        return view(v, k)
+    end
 end
 
 """
@@ -150,7 +155,7 @@ Variant of [`partialsort!`](@ref) which copies `v` before partially sorting it, 
 same thing as `partialsort!` but leaving `v` unmodified.
 """
 partialsort(v::AbstractVector, k::Union{Int,OrdinalRange}; kws...) =
-    partialsort!(copymutable(v), k; kws...)
+    copy(partialsort!(copymutable(v), k; kws...))
 
 
 # reference on sorted binary search:
@@ -681,7 +686,7 @@ that value is returned; if `k` is a range, an array of values at those indices i
 Note that this is equivalent to, but more efficient than, calling `sortperm(...)[k]`.
 """
 partialsortperm(v::AbstractVector, k::Union{Integer,OrdinalRange}; kwargs...) =
-    partialsortperm!(similar(Vector{eltype(k)}, indices(v,1)), v, k; kwargs..., initialized=false)
+    copy(partialsortperm!(similar(Vector{eltype(k)}, indices(v,1)), v, k; kwargs..., initialized=false))
 
 """
     partialsortperm!(ix, v, k, [alg=<algorithm>,] [by=<transform>,] [lt=<comparison>,] [rev=false,] [initialized=false])
@@ -704,7 +709,12 @@ function partialsortperm!(ix::AbstractVector{<:Integer}, v::AbstractVector,
 
     # do partial quicksort
     sort!(ix, PartialQuickSort(k), Perm(ord(lt, by, rev, order), v))
-    return ix[k]
+
+    if k isa Integer
+        return ix[k]
+    else
+        return view(ix, k)
+    end
 end
 
 ## sortperm: the permutation to sort an array ##
