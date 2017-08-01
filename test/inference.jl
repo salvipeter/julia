@@ -1215,7 +1215,7 @@ m0.isva = true
 
 # InvalidCodeError 13: encountered Expr head `:method` in non-top-level code
 
-# TODO: This is a tough case to test an isolation...
+# TODO: This is a tough case to test in isolation...
 
 # InvalidCodeError 14: CodeInfo for method contains fewer slotnames than the number of method arguments
 m0.nargs += 20
