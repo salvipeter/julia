@@ -105,6 +105,7 @@ script:
           echo "-- end of deps build log -----------------------------------------------";
           false; }
     # compile / install Julia
+    - make $BUILDOPTS NO_GIT=1 all | moreutils/ts -s "%.s"
     - make $BUILDOPTS NO_GIT=1 prefix=/tmp/julia install | moreutils/ts -s "%.s"
     - make $BUILDOPTS NO_GIT=1 build-stats
     - du -sk /tmp/julia/*
