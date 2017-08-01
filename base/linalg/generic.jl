@@ -806,6 +806,8 @@ function pinv(v::AbstractVector{T}, tol::Real=real(zero(T))) where T
     return res
 end
 
+pinv(v::RowVector{T}, tol::Real=real(zero(T))) where {T} = pinv(v', tol)'
+
 """
     \\(A, B)
 
