@@ -1701,16 +1701,21 @@
           (case t
             ((#\,)
              (take-token s)
-             (if (eqv? (require-token s) closer)
-                 ;; allow ending with ,
-                 (begin (take-token s)
-                        (cons 'vect (reverse (cons nxt lst))))
-                 (loop (cons nxt lst) (parse-eq* s))))
+             (cond ((eqv? (require-token s) closer)
+                    ;; allow ending with ,
+                    (begin (take-token s)
+                           (cons 'vect (reverse (cons nxt lst)))))
+                   ((eqv? (require-token s) #\;)
+                    ;; [a,; ...
+                    (let ((params (parse-arglist s closer)))
+                      `(vect ,@params ,@(reverse lst) ,nxt)))
+                   (else
+                    (loop (cons nxt lst) (parse-eq* s)))))
             ((#\;)
              (if (eqv? (require-token s) closer)
                  (loop lst nxt)
                  (let ((params (parse-arglist s closer)))
-                   `(vcat ,@params ,@(reverse lst) ,nxt))))
+                   `(vect ,@params ,@(reverse lst) ,nxt))))
             ((#\] #\})
              (error (string "unexpected \"" t "\"")))
             (else
