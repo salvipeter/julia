@@ -1482,6 +1482,8 @@ typedef struct _jl_handler_t {
     size_t world_age;
 } jl_handler_t;
 
+#if !defined(JULIA_ENABLE_THREADING) || !defined(JULIA_ENABLE_PARTR)
+
 typedef struct _jl_task_t {
     JL_DATA_TYPE
     struct _jl_task_t *parent;
@@ -1520,18 +1522,10 @@ typedef struct _jl_task_t {
     jl_timing_block_t *timing_stack;
 } jl_task_t;
 
-JL_DLLEXPORT jl_task_t *jl_new_task(jl_function_t *start, size_t ssize);
-JL_DLLEXPORT void jl_switchto(jl_task_t **pt);
-JL_DLLEXPORT void JL_NORETURN jl_throw(jl_value_t *e);
-JL_DLLEXPORT void JL_NORETURN jl_rethrow(void);
-JL_DLLEXPORT void JL_NORETURN jl_rethrow_other(jl_value_t *e);
-JL_DLLEXPORT void JL_NORETURN jl_no_exc_handler(jl_value_t *e);
+#endif // !JULIA_ENABLE_THREADING || ! JULIA_ENABLE_PARTR
 
-#include "locks.h"   // requires jl_task_t definition
-
-#ifdef JULIA_ENABLE_THREADING
-#ifdef JULIA_ENABLE_PARTR
-/* ptask settings */
+#if defined(JULIA_ENABLE_THREADING) && defined(JULIA_ENABLE_PARTR)
+/* task settings */
 #define TASK_IS_DETACHED        0x02
     /* clean up the task on completion */
 #define TASK_IS_STICKY          0x04
@@ -1540,31 +1534,61 @@ JL_DLLEXPORT void JL_NORETURN jl_no_exc_handler(jl_value_t *e);
 typedef struct _arriver_t arriver_t;
 typedef struct _reducer_t reducer_t;
 
-typedef struct _jl_ptaskq_t jl_ptaskq_t;
-typedef struct _jl_ptaskq_t jl_condition_t;
-typedef struct _jl_ptask_t jl_ptask_t;
+typedef struct _jl_taskq_t jl_taskq_t;
+typedef struct _jl_taskq_t jl_condition_t; // TODO
+typedef struct _jl_task_t jl_task_t;
 
-struct _jl_ptaskq_t {
-    jl_ptask_t *head;
+struct _jl_taskq_t {
+    jl_task_t *head;
     jl_mutex_t lock;
 };
 
-struct _jl_ptask_t {
-    /* to link this task into queues */
-    jl_ptask_t *next;
+struct _jl_task_t {
+    JL_DATA_TYPE
 
-    /* TODO: context and stack */
+    /* to link this task into queues */
+    jl_task_t *next;
+
+    /* context and stack */
+    jl_jmp_buf ctx;
+    size_t bufsz;
+    void *stkbuf;
+
+    /* task local storage */
+    jl_value_t *storage;
 
     /* state */
+    jl_sym_t *state;
     size_t started:1;
+
+    /* TODO: other stuff from old task structure */
+    size_t ssize;
+    jl_value_t *consumers;
+    jl_value_t *donenotify;
+    jl_value_t *exception;
+    jl_value_t *backtrace;
+    arraylist_t locks;
 
     /* task entry point, arguments, result, etc. */
     jl_method_instance_t *mfunc;
     jl_generic_fptr_t fptr;
     jl_value_t *args;
     jl_value_t *result;
+
+    /* current exception handler */
+    jl_handler_t *eh;
+
+    /* saved gc stack top for context switches */
+    jl_gcframe_t *gcstack;
+
+    /* current module, or NULL if this task has not set one */
     jl_module_t *current_module;
+
+    /* current world age */
     size_t world_age;
+
+    /* thread currently running this task */
+    int16_t curr_tid;
 
     /* grain's range, for parfors */
     int64_t start, end;
@@ -1575,7 +1599,7 @@ struct _jl_ptask_t {
     jl_value_t *rargs;
 
     /* parent (first) task of a parfor set */
-    jl_ptask_t *parent;
+    jl_task_t *parent;
 
     /* to synchronize/reduce grains of a parfor */
     arriver_t *arr;
@@ -1585,7 +1609,7 @@ struct _jl_ptask_t {
     jl_value_t *red_result;
 
     /* completion queue */
-    jl_ptaskq_t cq;
+    jl_taskq_t cq;
 
     /* task settings */
     int8_t  settings;
@@ -1598,9 +1622,19 @@ struct _jl_ptask_t {
 
     /* for the multiqueue */
     int16_t prio;
+
+    jl_timing_block_t *timing_stack;
 };
-#endif // JULIA_ENABLE_PARTR
-#endif // JULIA_ENABLE_THREADING
+#endif // JULIA_ENABLE_THREADING && JULIA_ENABLE_PARTR
+
+JL_DLLEXPORT jl_task_t *jl_new_task(jl_function_t *start, size_t ssize);
+JL_DLLEXPORT void jl_switchto(jl_task_t **pt);
+JL_DLLEXPORT void JL_NORETURN jl_throw(jl_value_t *e);
+JL_DLLEXPORT void JL_NORETURN jl_rethrow(void);
+JL_DLLEXPORT void JL_NORETURN jl_rethrow_other(jl_value_t *e);
+JL_DLLEXPORT void JL_NORETURN jl_no_exc_handler(jl_value_t *e);
+
+#include "locks.h"   // requires jl_task_t definition
 
 STATIC_INLINE void jl_eh_restore_state(jl_handler_t *eh)
 {

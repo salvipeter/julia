@@ -38,7 +38,7 @@ extern "C" {
 /* a task heap */
 typedef struct taskheap_tag {
     jl_mutex_t lock;
-    jl_ptask_t **tasks;
+    jl_task_t **tasks;
     int16_t ntasks, prio;
 } taskheap_t;
 
@@ -61,7 +61,7 @@ static inline void multiq_init()
     heaps = (taskheap_t *)calloc(heap_p, sizeof(taskheap_t));
     for (int16_t i = 0;  i < heap_p;  ++i) {
         jl_mutex_init(&heaps[i].lock);
-        heaps[i].tasks = (jl_ptask_t **)calloc(tasks_per_heap, sizeof(jl_ptask_t *));
+        heaps[i].tasks = (jl_task_t **)calloc(tasks_per_heap, sizeof(jl_task_t *));
         heaps[i].ntasks = 0;
         heaps[i].prio = INT16_MAX;
     }
@@ -76,7 +76,7 @@ static inline void sift_up(taskheap_t *heap, int16_t idx)
     if (idx > 0) {
         int16_t parent = (idx-1)/heap_d;
         if (heap->tasks[idx]->prio <= heap->tasks[parent]->prio) {
-            jl_ptask_t *t = heap->tasks[parent];
+            jl_task_t *t = heap->tasks[parent];
             heap->tasks[parent] = heap->tasks[idx];
             heap->tasks[idx] = t;
             sift_up(heap, parent);
@@ -95,7 +95,7 @@ static inline void sift_down(taskheap_t *heap, int16_t idx)
                 ++child) {
             if (heap->tasks[child]
                     &&  heap->tasks[child]->prio <= heap->tasks[idx]->prio) {
-                jl_ptask_t *t = heap->tasks[idx];
+                jl_task_t *t = heap->tasks[idx];
                 heap->tasks[idx] = heap->tasks[child];
                 heap->tasks[child] = t;
                 sift_down(heap, child);
@@ -107,7 +107,7 @@ static inline void sift_down(taskheap_t *heap, int16_t idx)
 
 /*  multiq_insert()
  */
-static inline int multiq_insert(jl_ptask_t *task, int16_t priority)
+static inline int multiq_insert(jl_task_t *task, int16_t priority)
 {
     jl_ptls_t ptls = jl_get_ptls_states();
     uint64_t rn;
@@ -135,12 +135,12 @@ static inline int multiq_insert(jl_ptask_t *task, int16_t priority)
 
 /*  multiq_deletemin()
  */
-static inline jl_ptask_t *multiq_deletemin()
+static inline jl_task_t *multiq_deletemin()
 {
     jl_ptls_t ptls = jl_get_ptls_states();
     uint64_t rn1, rn2;
     int16_t i, prio1, prio2;
-    jl_ptask_t *task;
+    jl_task_t *task;
 
     for (i = 0;  i < jl_n_threads;  ++i) {
         rn1 = cong(heap_p, cong_unbias, &ptls->rngseed);
@@ -354,7 +354,7 @@ static inline void *reduce(arriver_t *arr, reducer_t *red, void *(*rf)(void *, v
 // ---
 
 // sticky task queues need to be visible to all threads
-jl_ptaskq_t *sticky_taskqs;
+jl_taskq_t *sticky_taskqs;
 
 // internally used to indicate a yield occurred in the runtime itself
 // TODO: what's the Julia way to do this? A symbol?
@@ -369,7 +369,7 @@ void jl_init_threadinginfra(void)
     multiq_init();
 
     /* allocate sticky task queues */
-    sticky_taskqs = (jl_ptaskq_t *)jl_malloc_aligned(jl_n_threads * sizeof(jl_ptaskq_t), 64);
+    sticky_taskqs = (jl_taskq_t *)jl_malloc_aligned(jl_n_threads * sizeof(jl_taskq_t), 64);
 }
 
 
@@ -438,7 +438,7 @@ void jl_threadfun(void *arg)
 // coroutine entry point
 static void partr_coro(void *ctx)
 {
-    jl_ptask_t *task = (jl_ptask_t *)ctx; // TODO. ctx_get_user_ptr(ctx);
+    jl_task_t *task = (jl_task_t *)ctx; // TODO. ctx_get_user_ptr(ctx);
     //task->result = task->f(task->arg, task->start, task->end);
 
     /* grain tasks must synchronize */
@@ -481,16 +481,16 @@ static void partr_coro(void *ctx)
 
 
 // add the specified task to the sticky task queue
-static void add_to_stickyq(jl_ptask_t *task)
+static void add_to_stickyq(jl_task_t *task)
 {
     assert(task->sticky_tid != -1);
 
-    jl_ptaskq_t *q = &sticky_taskqs[task->sticky_tid];
+    jl_taskq_t *q = &sticky_taskqs[task->sticky_tid];
     JL_LOCK(&q->lock);
     if (q->head == NULL)
         q->head = task;
     else {
-        jl_ptask_t *pt = q->head;
+        jl_task_t *pt = q->head;
         while (pt->next)
             pt = pt->next;
         pt->next = task;
@@ -500,17 +500,17 @@ static void add_to_stickyq(jl_ptask_t *task)
 
 
 // pop the first task off the sticky task queue
-static jl_ptask_t *get_from_stickyq()
+static jl_task_t *get_from_stickyq()
 {
     jl_ptls_t ptls = jl_get_ptls_states();
-    jl_ptaskq_t *q = ptls->sticky_taskq;
+    jl_taskq_t *q = ptls->sticky_taskq;
 
     /* racy check for quick path */
     if (q->head == NULL)
         return NULL;
 
     JL_LOCK(&q->lock);
-    jl_ptask_t *task = q->head;
+    jl_task_t *task = q->head;
     if (task) {
         q->head = task->next;
         task->next = NULL;
@@ -522,7 +522,7 @@ static jl_ptask_t *get_from_stickyq()
 
 
 // start the task if it is new, or switch to it
-static jl_value_t *resume(jl_ptask_t *task)
+static jl_value_t *resume(jl_task_t *task)
 {
     jl_ptls_t ptls = jl_get_ptls_states();
 
@@ -565,7 +565,7 @@ static int run_next()
     jl_ptls_t ptls = jl_get_ptls_states();
 
     /* first check for sticky tasks */
-    jl_ptask_t *task = get_from_stickyq();
+    jl_task_t *task = get_from_stickyq();
 
     /* no sticky tasks, go to the multiq */
     if (task == NULL) {
@@ -582,10 +582,12 @@ static int run_next()
 
     /* run/resume the task */
     ptls->curr_task = task;
+    task->curr_tid = ptls->tid;
 
     // TODO
     int64_t y = 0;
     // int64_t y = (int64_t)resume(task->ctx);
+    task->curr_tid = -1;
     ptls->curr_task = NULL;
 
     /* if the task isn't done, it is either in a CQ, or must be re-queued */
@@ -610,11 +612,11 @@ static int run_next()
 
     /* add back all the tasks in this one's completion queue */
     JL_LOCK(&task->cq.lock);
-    jl_ptask_t *cqtask = task->cq.head;
+    jl_task_t *cqtask = task->cq.head;
     task->cq.head = NULL;
     JL_UNLOCK(&task->cq.lock);
 
-    jl_ptask_t *cqnext;
+    jl_task_t *cqnext;
     while (cqtask) {
         cqnext = cqtask->next;
         cqtask->next = NULL;
@@ -658,12 +660,12 @@ static int setup_task_fun(jl_value_t *_args, jl_method_instance_t **mfunc,
 
 
 // allocate and initialize a task
-static jl_ptask_t *new_task(jl_value_t *_args)
+static jl_task_t *new_task(jl_value_t *_args)
 {
     jl_ptls_t ptls = jl_get_ptls_states();
 
-    // TODO: using jl_task_type below, assuming task and ptask will be merged
-    jl_ptask_t *task = (jl_ptask_t *)jl_gc_alloc(ptls, sizeof (jl_ptask_t),
+    // TODO: using jl_task_type below, assuming task and task will be merged
+    jl_task_t *task = (jl_task_t *)jl_gc_alloc(ptls, sizeof (jl_task_t),
                                                  jl_task_type);
     // TODO. ctx_construct(task->ctx, task->stack, TASK_STACK_SIZE, partr_coro, task);
     if (!setup_task_fun(_args, &task->mfunc, &task->fptr))
@@ -680,14 +682,14 @@ static jl_ptask_t *new_task(jl_value_t *_args)
 
 
 // allocate a task and copy the specified task's contents into it
-static jl_ptask_t *copy_task(jl_ptask_t *ft)
+static jl_task_t *copy_task(jl_task_t *ft)
 {
     jl_ptls_t ptls = jl_get_ptls_states();
 
-    // TODO: using jl_task_type below, assuming task and ptask will be merged
-    jl_ptask_t *task = (jl_ptask_t *)jl_gc_alloc(ptls, sizeof (jl_ptask_t),
+    // TODO: using jl_task_type below, assuming task and task will be merged
+    jl_task_t *task = (jl_task_t *)jl_gc_alloc(ptls, sizeof (jl_task_t),
                                                  jl_task_type);
-    memcpy(task, ft, sizeof (jl_ptask_t));
+    memcpy(task, ft, sizeof (jl_task_t));
     return task;
 }
 
@@ -702,7 +704,7 @@ int partr_spawn(partr_t *t, jl_value_t *_args, int8_t sticky, int8_t detach)
 {
     jl_ptls_t ptls = jl_get_ptls_states();
 
-    jl_ptask_t *task = new_task(_args);
+    jl_task_t *task = new_task(_args);
     if (task == NULL)
         return -1;
     if (sticky)
@@ -731,7 +733,7 @@ int partr_spawn(partr_t *t, jl_value_t *_args, int8_t sticky, int8_t detach)
  */
 int partr_sync(void **r, partr_t t)
 {
-    jl_ptask_t *task = (jl_ptask_t *)t;
+    jl_task_t *task = (jl_task_t *)t;
 
     jl_ptls_t ptls = jl_get_ptls_states();
 
@@ -749,7 +751,7 @@ int partr_sync(void **r, partr_t t)
             if (task->cq.head == NULL)
                 task->cq.head = ptls->curr_task;
             else {
-                jl_ptask_t *pt = task->cq.head;
+                jl_task_t *pt = task->cq.head;
                 while (pt->next)
                     pt = pt->next;
                 pt->next = ptls->curr_task;
@@ -810,7 +812,7 @@ int partr_parfor(partr_t *t, jl_value_t *_args, int64_t count, jl_value_t *_rarg
     int64_t start = 0, end;
     for (int64_t i = 0;  i < n;  ++i) {
         end = start + each.quot + (i < each.rem ? 1 : 0);
-        jl_ptask_t *task;
+        jl_task_t *task;
         if (*t == NULL)
             *t = task = new_task(_args);
         else

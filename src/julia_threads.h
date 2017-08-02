@@ -109,8 +109,8 @@ typedef struct _jl_tls_states_t {
     int16_t tid;
 #ifdef JULIA_ENABLE_PARTR
     uint64_t rngseed;
-    struct _jl_ptask_t *curr_task;
-    struct _jl_ptaskq_t *sticky_taskq;
+    struct _jl_task_t *curr_task;
+    struct _jl_taskq_t *sticky_taskq;
 #endif
     size_t bt_size;
     // JL_MAX_BT_SIZE + 1 elements long
